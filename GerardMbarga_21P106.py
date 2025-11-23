@@ -20,7 +20,8 @@ if not os.path.exists(USER_FILE):
         json.dump({"utilisateurs": []}, f, indent=4, ensure_ascii=False)
 
 if not os.path.exists(DATA_FILE):
-    cols = ["Nom", "Age", "Sexe",
+    cols = ["NomUtilisateur", "AgeUtilisateur", "SexeUtilisateur",
+            "Materiau",
             "Res_Traction", "Durete", "Module_Elasticite",
             "pH", "Corrosivite", "Composition",
             "Conductivite", "Capacite_Calorifique", "Expansion",
@@ -50,7 +51,7 @@ def check_user_voted(username: str) -> bool:
         return False
     try:
         df = pd.read_excel(DATA_FILE)
-        return username in df.get("Nom", []).tolist()
+        return username in df.get("NomUtilisateur", []).tolist()
     except:
         return False
 
@@ -129,27 +130,39 @@ def auth_page():
 # -----------------------------
 # RADAR CHART
 # -----------------------------
-def plot_radar(data, user_row):
-    categories = list(data.columns[3:-1])
-    values = user_row[categories].values.flatten().tolist()
+def plot_radar(user_row):
+    categories = ["Res_Traction", "Durete", "Module_Elasticite",
+                  "pH", "Corrosivite", "Composition",
+                  "Conductivite", "Capacite_Calorifique", "Expansion"]
+
+    values = [float(user_row[c].values[0]) if pd.notna(user_row[c].values[0]) else 0.0 for c in categories]
     N = len(categories)
     
     angles = np.linspace(0, 2*np.pi, N, endpoint=False).tolist()
-    values += values[:1]  # fermer le cercle
+    values += values[:1]
     angles += angles[:1]
     
-    fig, ax = plt.subplots(figsize=(6,6), subplot_kw=dict(polar=True))
+    fig, ax = plt.subplots(figsize=(7,7), subplot_kw=dict(polar=True))
     ax.set_theta_offset(np.pi / 2)
     ax.set_theta_direction(-1)
     
-    ax.plot(angles, values, color='red', linewidth=2, label=user_row["Nom"].values[0])
-    ax.fill(angles, values, color='red', alpha=0.25)
+    ax.plot(angles, values, color='#1f77b4', linewidth=2, label=user_row["Materiau"].values[0])
+    ax.fill(angles, values, color='#1f77b4', alpha=0.25)
     
+    pretty = [
+        "Tract.", "Dureté", "Module E",
+        "pH", "Corros.", "Comp.",
+        "Cond.", "C. calor.", "Exp."
+    ]
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(categories, fontsize=10)
+    ax.set_xticklabels(pretty, fontsize=10)
+    
+    ax.set_rlabel_position(0)
+    ax.set_yticks([20,40,60,80,100])
     ax.set_ylim(0,100)
     
-    ax.set_title("Évaluation des sous-propriétés", size=15, pad=20)
+    ax.set_title(f"Évaluation des sous-propriétés — Matériau: {user_row['Materiau'].values[0]}", size=14, pad=20)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
     st.pyplot(fig)
 
 # -----------------------------
@@ -166,53 +179,54 @@ def main():
             if k in st.session_state: del st.session_state[k]
         return
     
-    st.title("📊 Collecte de données sur les propriétés d'un matériau au choix")
+    st.title("📊 Sondage sur les propriétés d'un matériau")
     
     try:
         df_res = pd.read_excel(DATA_FILE)
     except:
-        df_res = pd.DataFrame(columns=["Nom","Age","Sexe",
-            "Res_Traction", "Durete", "Module_Elasticite",
-            "pH", "Corrosivite", "Composition",
-            "Conductivite", "Capacite_Calorifique", "Expansion",
-            "Commentaire"])
-    
+        df_res = pd.DataFrame()
+
     if st.session_state.get("voted", False):
-        st.subheader(f"Bon retour sur ce sondage {st.session_state.get('user','')} !")
         st.warning("❌ Vous avez déjà répondu au sondage. Merci !")
     else:
         st.subheader(f"Bienvenue {st.session_state.get('user','')} !")
         with st.form("form_sondage"):
-            st.markdown("### Propriétés mécaniques")
+            materiau = st.text_input("Nom du matériau", placeholder="Ex: Béton C25")
+
+            st.markdown("### 🔧 Propriétés mécaniques (sur 100)")
             res_traction = st.slider("Résistance à la traction", 0,100,50)
             durete = st.slider("Dureté",0,100,50)
             module_elasticite = st.slider("Module d'élasticité",0,100,50)
             
-            st.markdown("### Propriétés chimiques")
+            st.markdown("### ⚗️ Propriétés chimiques (sur 100)")
             ph = st.slider("pH",0,100,50)
             corrosivite = st.slider("Corrosivité",0,100,50)
             composition = st.slider("Composition",0,100,50)
             
-            st.markdown("### Propriétés thermiques")
+            st.markdown("### 🔥 Propriétés thermiques (sur 100)")
             conductivite = st.slider("Conductivité",0,100,50)
             capacite_calorifique = st.slider("Capacité calorifique",0,100,50)
-            expansion = st.slider("Expansion",0,100,50)
+            expansion = st.slider("Expansion thermique",0,100,50)
             
             commentaire = st.text_area("Commentaire")
+
             submit = st.form_submit_button("Envoyer")
         
         if submit:
-            if not commentaire.strip():
-                st.error("Veuillez ajouter un commentaire.")
+            # 🚨 VALIDATION STRICTE
+            if not materiau.strip() or not commentaire.strip():
+                st.error("❌ Aucun champ ne doit être vide. Veuillez remplir tous les champs.")
             else:
                 users = load_users()
                 current_user = next((u for u in users if u.get("nom") == st.session_state["user"]), {})
                 age = current_user.get("age","")
                 sexe = current_user.get("sexe","")
+
                 new_row = pd.DataFrame({
-                    "Nom":[st.session_state["user"]],
-                    "Age":[age],
-                    "Sexe":[sexe],
+                    "NomUtilisateur":[st.session_state["user"]],
+                    "AgeUtilisateur":[age],
+                    "SexeUtilisateur":[sexe],
+                    "Materiau":[materiau],
                     "Res_Traction":[res_traction],
                     "Durete":[durete],
                     "Module_Elasticite":[module_elasticite],
@@ -224,14 +238,22 @@ def main():
                     "Expansion":[expansion],
                     "Commentaire":[commentaire]
                 })
+
                 df_res = pd.concat([df_res,new_row], ignore_index=True)
                 df_res.to_excel(DATA_FILE, index=False)
+
                 st.session_state["voted"] = True
                 st.success("✅ Réponse enregistrée !")
 
-    # Afficher le radar chart pour le dernier utilisateur
+    # Radar chart
     if st.session_state.get("voted", False):
-        plot_radar(df_res, df_res[df_res["Nom"]==st.session_state["user"]])
+        try:
+            df_plot = pd.read_excel(DATA_FILE)
+            user_rows = df_plot[df_plot["NomUtilisateur"]==st.session_state["user"]]
+            if not user_rows.empty:
+                plot_radar(user_rows.tail(1))
+        except Exception as e:
+            st.error(f"Erreur affichage graphique : {e}")
 
 # -----------------------------
 # EXECUTION
