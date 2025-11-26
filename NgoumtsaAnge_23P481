@@ -1,0 +1,338 @@
+# pont_app_enhanced.py
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from io import BytesIO
+import os
+from datetime import datetime
+import uuid
+
+# -----------------------
+# Config
+# -----------------------
+DATA_FILE = "pont_data_enhanced.csv"
+UPLOAD_DIR = "uploads_pont"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Columns for CSV
+COLUMNS = [
+    "ID", "Timestamp", "Nom", "Pont", "Ville", "Latitude", "Longitude",
+    "Type_pont", "Etat_tablier", "Commentaire",
+    "Note_Securite", "Note_Deformation", "Note_Corrosion", "Note_Tablier",
+    "Indice_Etat", "Photos"  # photos stored as semicolon separated filenames
+]
+
+# -----------------------
+# Helpers
+# -----------------------
+def load_data():
+    if os.path.exists(DATA_FILE):
+        return pd.read_csv(DATA_FILE, dtype=str)
+    else:
+        return pd.DataFrame(columns=COLUMNS)
+
+def save_data(df):
+    df.to_csv(DATA_FILE, index=False)
+
+def compute_index(row):
+    # Notes expected 1..5
+    try:
+        scores = np.array([
+            float(row.get("Note_Securite", 0)),
+            float(row.get("Note_Deformation", 0)),
+            float(row.get("Note_Corrosion", 0)),
+            float(row.get("Note_Tablier", 0))
+        ])
+        # Weighted average (example weights)
+        weights = np.array([0.4, 0.2, 0.2, 0.2])
+        # Normalize if missing values
+        mask = ~np.isnan(scores)
+        if mask.sum() == 0:
+            return 0.0
+        w = weights[mask]
+        s = scores[mask]
+        idx = float((s * w).sum() / w.sum())
+        return round(idx, 2)
+    except Exception:
+        return 0.0
+
+def save_uploaded_files(uploaded_files):
+    saved_names = []
+    for up in uploaded_files:
+        if up is None:
+            continue
+        ext = os.path.splitext(up.name)[1]
+        fname = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{ext}"
+        path = os.path.join(UPLOAD_DIR, fname)
+        with open(path, "wb") as f:
+            f.write(up.getbuffer())
+        saved_names.append(fname)
+    return saved_names
+
+def make_pie_chart(df, col, title):
+    counts = df[col].value_counts()
+    if counts.empty:
+        return None
+    colors = ["#4CAF50", "#FFC107", "#F44336", "#2196F3", "#9C27B0"]  # nice palette
+    fig, ax = plt.subplots(figsize=(5,5))
+    ax.pie(counts, labels=counts.index, autopct='%1.1f%%', colors=colors[:len(counts)], startangle=90)
+    ax.set_title(title)
+    plt.tight_layout()
+    return fig
+
+def make_bar_ratings(df, rating_cols, title):
+    if df.empty:
+        return None
+    means = df[rating_cols].astype(float).mean()
+    fig, ax = plt.subplots(figsize=(6,4))
+    bars = ax.bar(means.index, means.values, color=["#1f77b4","#ff7f0e","#2ca02c","#d62728"], alpha=0.9)
+    ax.set_ylim(0,5)
+    ax.set_ylabel("Moyenne (1-5)")
+    ax.set_title(title)
+    for bar in bars:
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height()+0.05, f"{bar.get_height():.2f}", ha='center')
+    plt.tight_layout()
+    return fig
+
+def generate_pdf_report(selected_df, bridge_name=None):
+    buf = BytesIO()
+    with PdfPages(buf) as pdf:
+        # Page 1: Summary text
+        fig_text = plt.figure(figsize=(8.27, 11.69))  # A4
+        fig_text.clf()
+        txt = fig_text.text(0.01, 0.95, f"Rapport - Analyse des évaluations", fontsize=18, weight='bold')
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        fig_text.text(0.01, 0.92, f"Date: {now}", fontsize=10)
+        if bridge_name:
+            fig_text.text(0.01, 0.88, f"Pont: {bridge_name}", fontsize=12)
+        fig_text.text(0.01, 0.84, f"Nombre d'évaluations incluses: {len(selected_df)}", fontsize=12)
+        pdf.savefig(fig_text)
+        plt.close(fig_text)
+
+        # Page 2: Pie chart of states
+        fig1 = make_pie_chart(selected_df, "Etat_tablier", "Répartition des états (tabliers)")
+        if fig1:
+            pdf.savefig(fig1); plt.close(fig1)
+
+        # Page 3: Bar ratings
+        rating_cols = ["Note_Securite","Note_Deformation","Note_Corrosion","Note_Tablier"]
+        if not selected_df.empty and all(c in selected_df.columns for c in rating_cols):
+            fig2 = make_bar_ratings(selected_df, rating_cols, "Moyennes des notes (1-5)")
+            if fig2:
+                pdf.savefig(fig2); plt.close(fig2)
+
+        # Page 4+: Individual photos (first 6)
+        photos = []
+        for p in selected_df.get("Photos", pd.Series(dtype=str)).dropna().unique():
+            for fname in str(p).split(";"):
+                if fname:
+                    photos.append(fname)
+        # Limit to first 8 photos
+        for photo in photos[:8]:
+            path = os.path.join(UPLOAD_DIR, photo)
+            if os.path.exists(path):
+                try:
+                    img_fig = plt.figure(figsize=(8.27, 6))
+                    img = plt.imread(path)
+                    plt.imshow(img)
+                    plt.axis('off')
+                    pdf.savefig(img_fig)
+                    plt.close(img_fig)
+                except Exception:
+                    pass
+    buf.seek(0)
+    return buf
+
+# -----------------------
+# Load data
+# -----------------------
+df = load_data()
+
+# -----------------------
+# App layout
+# -----------------------
+st.set_page_config(page_title="Pont - Sondage & Suivi", layout="wide")
+st.title("🌉 Application : Sondage et suivi - Ponts")
+
+# Left column: form
+col1, col2 = st.columns([1,2])
+
+with col1:
+    st.header("➤ Soumettre / Modifier une évaluation")
+    name = st.text_input("Votre nom", key="name_input")
+    bridge = st.text_input("Nom du pont", key="bridge_input")
+    city = st.text_input("Ville / Localisation", key="city_input")
+    lat = st.text_input("Latitude (optionnelle)", key="lat_input")
+    lon = st.text_input("Longitude (optionnelle)", key="lon_input")
+    type_bridge = st.selectbox("Type de pont", ["Pont en béton", "Pont métallique", "Pont mixte", "Pont en bois", "Autre"], key="type_input")
+    state = st.selectbox("État du tablier", ["Très Bon", "Bon", "Moyen", "Mauvais", "Très Mauvais"], key="state_input")
+    st.markdown("### Notes (1 = faible, 5 = excellent)")
+    note_sec = st.slider("Sécurité", 1, 5, 3, key="note_sec")
+    note_def = st.slider("Déformation observée (plus bas = mieux)", 1, 5, 3, key="note_def")
+    note_cor = st.slider("Corrosion (plus bas = mieux)", 1, 5, 3, key="note_cor")
+    note_tab = st.slider("État du tablier", 1, 5, 3, key="note_tab")
+    comment = st.text_area("Commentaire", key="comment_input")
+    uploaded_files = st.file_uploader("Photos (jpg/png) — multiple OK", accept_multiple_files=True, type=["png","jpg","jpeg"])
+
+    # Buttons
+    submit_btn = st.button("📥 Soumettre l'évaluation")
+    edit_btn = st.button("✏ Modifier dernier commentaire (par nom)")
+
+    # Submit logic
+    if submit_btn:
+        # validation
+        if name.strip() == "" or bridge.strip() == "" or comment.strip() == "":
+            st.error("▶ Les champs 'Votre nom', 'Nom du pont' et 'Commentaire' sont obligatoires.")
+        else:
+            # Save photos
+            saved_photos = save_uploaded_files(uploaded_files) if uploaded_files else []
+            photos_field = ";".join(saved_photos) if saved_photos else ""
+            # build row
+            new_id = uuid.uuid4().hex
+            timestamp = datetime.now().isoformat()
+            row = {
+                "ID": new_id,
+                "Timestamp": timestamp,
+                "Nom": name.strip(),
+                "Pont": bridge.strip(),
+                "Ville": city.strip(),
+                "Latitude": lat.strip(),
+                "Longitude": lon.strip(),
+                "Type_pont": type_bridge,
+                "Etat_tablier": state,
+                "Commentaire": comment.strip(),
+                "Note_Securite": note_sec,
+                "Note_Deformation": note_def,
+                "Note_Corrosion": note_cor,
+                "Note_Tablier": note_tab,
+                "Photos": photos_field
+            }
+            row["Indice_Etat"] = compute_index(row)
+            # append to df and save
+            df = df.append(row, ignore_index=True)
+            save_data(df)
+            st.success("✅ Évaluation enregistrée.")
+            # refresh (re-read)
+            df = load_data()
+
+    # Edit logic: modify last entry by that name
+    if edit_btn:
+        if name.strip() == "":
+            st.error("▶ Pour modifier, entrez d'abord votre nom dans 'Votre nom'.")
+        else:
+            # find last record by that name
+            matches = df[df["Nom"].astype(str).str.strip().str.lower() == name.strip().lower()]
+            if matches.empty:
+                st.info("Aucune entrée trouvée sous ce nom.")
+            else:
+                last_idx = matches.index[-1]
+                # present area to change comment
+                new_comment = st.text_area("Modifier votre commentaire (écrase l'ancien):", value=matches.loc[last_idx, "Commentaire"])
+                if st.button("Valider modification du commentaire"):
+                    if new_comment.strip() == "":
+                        st.error("Le commentaire ne peut pas être vide.")
+                    else:
+                        df.at[last_idx, "Commentaire"] = new_comment.strip()
+                        save_data(df)
+                        st.success("✔ Commentaire mis à jour.")
+                        df = load_data()
+
+with col2:
+    st.header("📊 Visualisation & Exploration")
+    st.markdown("**Filtres**")
+    # Filters
+    unique_cities = sorted(df["Ville"].dropna().unique().tolist())
+    city_filter = st.selectbox("Ville (Filtrer)", options=["Toutes"] + unique_cities)
+    types = sorted(df["Type_pont"].dropna().unique().tolist())
+    type_filter = st.selectbox("Type (Filtrer)", options=["Tous"] + types)
+    states = sorted(df["Etat_tablier"].dropna().unique().tolist())
+    state_filter = st.selectbox("État (Filtrer)", options=["Tous"] + states)
+    date_min = st.date_input("Date min", value=None)
+    date_max = st.date_input("Date max", value=None)
+
+    # Apply filters to a working df
+    df_vis = df.copy()
+    if city_filter != "Toutes":
+        df_vis = df_vis[df_vis["Ville"] == city_filter]
+    if type_filter != "Tous":
+        df_vis = df_vis[df_vis["Type_pont"] == type_filter]
+    if state_filter != "Tous":
+        df_vis = df_vis[df_vis["Etat_tablier"] == state_filter]
+    # date filters (if timestamp exists)
+    try:
+        if date_min:
+            df_vis = df_vis[pd.to_datetime(df_vis["Timestamp"]).dt.date >= date_min]
+        if date_max:
+            df_vis = df_vis[pd.to_datetime(df_vis["Timestamp"]).dt.date <= date_max]
+    except Exception:
+        pass
+
+    st.markdown("---")
+    st.subheader("Diagramme circulaire : état des tabliers")
+    pie_fig = make_pie_chart(df_vis, "Etat_tablier", "Répartition des états")
+    if pie_fig:
+        st.pyplot(pie_fig)
+    else:
+        st.info("Aucune donnée à afficher pour le graphique.")
+
+    st.markdown("---")
+    st.subheader("Moyennes des notes")
+    rating_cols = ["Note_Securite","Note_Deformation","Note_Corrosion","Note_Tablier"]
+    # ensure columns exist
+    for c in rating_cols:
+        if c not in df_vis.columns:
+            df_vis[c] = np.nan
+    bar_fig = make_bar_ratings(df_vis, rating_cols, "Moyenne des notes (1-5)")
+    if bar_fig:
+        st.pyplot(bar_fig)
+
+    st.markdown("---")
+    st.subheader("Données (filtrées)")
+    st.dataframe(df_vis.sort_values(by="Timestamp", ascending=False).reset_index(drop=True))
+
+    # download CSV of filtered data
+    csv_buf = BytesIO()
+    df_vis.to_csv(csv_buf, index=False)
+    csv_bytes = csv_buf.getvalue()
+    st.download_button("⬇ Télécharger CSV (filtres appliqués)", data=csv_bytes, file_name="ponts_filtered.csv", mime="text/csv")
+
+    # PDF report for selected bridge or filtered set
+    st.markdown("---")
+    st.subheader("Générer un rapport PDF")
+    bridge_select = st.selectbox("Choisir un pont pour le rapport (optionnel)", options=["Tous"] + sorted(df["Pont"].dropna().unique().tolist()))
+    if st.button("🖨️ Générer PDF"):
+        if bridge_select != "Tous":
+            sel_df = df[df["Pont"] == bridge_select]
+        else:
+            sel_df = df_vis
+        if sel_df.empty:
+            st.error("Aucune donnée pour générer le rapport.")
+        else:
+            pdf_buf = generate_pdf_report(sel_df, bridge_name=(None if bridge_select=="Tous" else bridge_select))
+            st.download_button("⬇ Télécharger le rapport PDF", data=pdf_buf, file_name="rapport_ponts.pdf", mime="application/pdf")
+
+    st.markdown("---")
+    st.subheader("Photos récentes")
+    # show latest uploaded photos thumbnails
+    recent_photos = []
+    for photos_field in df["Photos"].dropna().astype(str).unique():
+        for fname in photos_field.split(";"):
+            if fname:
+                recent_photos.append(fname)
+    if recent_photos:
+        # show up to 6 thumbnails
+        cols = st.columns(3)
+        for i, fname in enumerate(recent_photos[-6:][::-1]):
+            path = os.path.join(UPLOAD_DIR, fname)
+            if os.path.exists(path):
+                try:
+                    cols[i%3].image(path, width=220, caption=fname)
+                except Exception:
+                    cols[i%3].write(fname)
+    else:
+        st.info("Aucune photo disponible.")
+
+st.markdown("---")
+st.caption("Application de sondage ponts — stockage local CSV & dossier uploads. Adaptée pour tests et prototypes.")
